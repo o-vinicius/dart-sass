@@ -5,7 +5,7 @@
 // DO NOT EDIT. This file was generated from async_evaluate.dart.
 // See tool/synchronize.dart for details.
 //
-// Checksum: be2d44a3dc50defd98446d806b4c21bfe54a4ba9
+// Checksum: be4b769eef781c28c0c0118cb750e7f9115a616a
 //
 // ignore_for_file: unused_import
 
@@ -42,7 +42,8 @@ import '../syntax.dart';
 import '../util/fixed_length_list_builder.dart';
 import '../utils.dart';
 import '../value.dart';
-import 'interface/expression.dart';
+import 'css_to_sass.dart';
+import 'interface/statement.dart';
 import 'interface/statement.dart';
 
 /// A function that takes a callback with no arguments.
@@ -817,13 +818,13 @@ class _EvaluateVisitor
     var stylesheet = result.item2;
 
     var url = stylesheet.span.sourceUrl;
-    if (_activeImports.contains(url)) {
+    if (!_activeImports.add(url)) {
       throw _exception("This file is already being loaded.", import.span);
     }
 
-    _activeImports.add(url);
+    var environment = _environment.global();
     _withStackFrame("@import", import, () {
-      _withEnvironment(_environment.global(), () {
+      _withEnvironment(environment, () {
         var oldImporter = _importer;
         var oldStylesheet = _stylesheet;
         _importer = importer;
@@ -835,6 +836,18 @@ class _EvaluateVisitor
         _stylesheet = oldStylesheet;
       });
     });
+
+    // TODO(nweiz): Make this check if any of the modules it uses actually
+    // contain CSS.
+    if (environment.usesModules) {
+      var moduleCss = _combineCss(environment
+          .toModule(const CssStylesheet.empty(), const Extender.empty())
+          .clone());
+      for (var statement in cssToSass(moduleCss).children) {
+        statement.accept(this);
+      }
+    }
+
     _activeImports.remove(url);
   }
 

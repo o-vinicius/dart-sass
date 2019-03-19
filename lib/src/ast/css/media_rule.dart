@@ -4,11 +4,12 @@
 
 import 'media_query.dart';
 import 'node.dart';
+import 'value.dart';
 
 /// A plain CSS `@media` rule.
 abstract class CssMediaRule extends CssParentNode {
   /// The queries for this rule.
   ///
   /// This is never empty.
-  List<CssMediaQuery> get queries;
+  CssValue<List<CssMediaQuery>> get queries;
 }
