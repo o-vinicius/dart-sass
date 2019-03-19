@@ -35,7 +35,8 @@ import '../syntax.dart';
 import '../util/fixed_length_list_builder.dart';
 import '../utils.dart';
 import '../value.dart';
-import 'interface/expression.dart';
+import 'interface/css.dart';
+import 'interface/statement.dart';
 import 'interface/statement.dart';
 
 /// A function that takes a callback with no arguments.
@@ -100,7 +101,8 @@ Future<Value> evaluateExpressionAsync(Expression expression,
 class _EvaluateVisitor
     implements
         StatementVisitor<Future<Value>>,
-        ExpressionVisitor<Future<Value>> {
+        ExpressionVisitor<Future<Value>>,
+        CssVisitor<Future<Value>> {
   /// The import cache used to import other stylesheets.
   final AsyncImportCache _importCache;
 
@@ -836,6 +838,9 @@ class _EvaluateVisitor
   }
 
   Future<Value> visitAtRule(AtRule node) async {
+    // NOTE: this logic is largely duplicated in [visitCssAtRule]. Most changes
+    // here should be mirrored there.
+
     if (_declarationName != null) {
       throw _exception(
           "At-rules may not be used within nested declarations.", node.span);
@@ -958,13 +963,13 @@ class _EvaluateVisitor
     var stylesheet = result.item2;
 
     var url = stylesheet.span.sourceUrl;
-    if (_activeImports.contains(url)) {
+    if (!_activeImports.add(url)) {
       throw _exception("This file is already being loaded.", import.span);
     }
 
-    _activeImports.add(url);
+    var environment = _environment.global();
     await _withStackFrame("@import", import, () async {
-      await _withEnvironment(_environment.global(), () async {
+      await _withEnvironment(environment, () async {
         var oldImporter = _importer;
         var oldStylesheet = _stylesheet;
         _importer = importer;
@@ -976,6 +981,15 @@ class _EvaluateVisitor
         _stylesheet = oldStylesheet;
       });
     });
+
+    // TODO(nweiz): Make this check if any of the modules it uses actually
+    // contain CSS.
+    if (environment.usesModules) {
+      _combineCss(environment.toModule(
+              const CssStylesheet.empty(), const Extender.empty()))
+          .accept(this);
+    }
+
     _activeImports.remove(url);
   }
 
@@ -1035,6 +1049,9 @@ class _EvaluateVisitor
 
   /// Adds a CSS import for [import].
   Future _visitStaticImport(StaticImport import) async {
+    // NOTE: this logic is largely duplicated in [visitCssImport]. Most changes
+    // here should be mirrored there.
+
     var url = await _interpolationToValue(import.url);
     var supports = import.supports;
     var resolvedSupports = supports is SupportsDeclaration
@@ -1098,6 +1115,9 @@ class _EvaluateVisitor
   }
 
   Future<Value> visitLoudComment(LoudComment node) async {
+    // NOTE: this logic is largely duplicated in [visitCssComment]. Most changes
+    // here should be mirrored there.
+
     if (_inFunction) return null;
 
     // Comments are allowed to appear between CSS imports.
@@ -1914,6 +1934,80 @@ class _EvaluateVisitor
         }))
             .join(),
         quotes: node.hasQuotes);
+  }
+
+  // ## Plain CSS
+
+  // These methods are used when evaluating CSS syntax trees from `@import`ed
+  // stylesheets that themselves contain `@use` rules, and CSS included via the
+  // `load-css()` function.
+
+  Future<Value> visitCssAtRule(CssAtRule node) async {
+    // NOTE: this logic is largely duplicated in [visitAtRule]. Most changes
+    // here should be mirrored there.
+
+    if (_declarationName != null) {
+      throw _exception(
+          "At-rules may not be used within nested declarations.", node.span);
+    }
+
+    if (node.children == null) {
+      _parent.addChild(node as ModifiableCssAtRule);
+      return null;
+    }
+
+    // We don't need to worry about keyframes becaues they're represented as
+    // `CssKeyframesBlock`.
+    var wasInUnknownAtRule = _inUnknownAtRule;
+    _inUnknownAtRule = true;
+    await _withParent(
+        ModifiableCssAtRule(node.name, node.span, value: node.value), () async {
+      // We don't have to check for an unknown at-rule in a style rule here,
+      // because the previous compilation has already bubbled the at-rule to the
+      // root.
+      for (var child in node.children) {
+        await child.accept(this);
+      }
+    },
+        through: (node) => node is CssStyleRule,
+        scopeWhen: node.hasDeclarations);
+    _inUnknownAtRule = wasInUnknownAtRule;
+    return null;
+  }
+
+  Future<Value> visitCssComment(CssComment node) {
+    // NOTE: this logic is largely duplicated in [visitLoudComment]. Most
+    // changes here should be mirrored there.
+
+    // Comments are allowed to appear between CSS imports.
+    if (_parent == _root && _endOfImports == _root.children.length) {
+      _endOfImports++;
+    }
+
+    _parent.addChild(node as ModifiableCssComment);
+    return null;
+  }
+
+  Future<Value> visitCssDeclaration(CssDeclaration node) {
+    _parent.addChild(node as ModifiableCssDeclaration);
+    return null;
+  }
+
+  Future<Value> visitCssImport(CssImport node) {
+    // NOTE: this logic is largely duplicated in [_visitStaticImport]. Most
+    // changes here should be mirrored there.
+
+    var modifiableNode = node as ModifiableCssImport;
+    if (_parent != _root) {
+      _parent.addChild(node);
+    } else if (_endOfImports == _root.children.length) {
+      _root.addChild(node);
+      _endOfImports++;
+    } else {
+      _outOfOrderImports ??= [];
+      _outOfOrderImports.add(node);
+    }
+    return null;
   }
 
   // ## Utilities

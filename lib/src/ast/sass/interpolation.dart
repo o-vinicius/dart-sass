@@ -50,6 +50,10 @@ class Interpolation implements SassNode {
     }
   }
 
+  /// Creates an interpolation that contains a single un-interpolated string.
+  Interpolation.plain(String contents, this.span)
+      : contents = List.unmodifiable([contents]);
+
   String toString() =>
       contents.map((value) => value is String ? value : "#{$value}").join();
 }

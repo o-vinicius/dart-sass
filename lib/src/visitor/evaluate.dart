@@ -5,7 +5,7 @@
 // DO NOT EDIT. This file was generated from async_evaluate.dart.
 // See tool/synchronize.dart for details.
 //
-// Checksum: f2cf0b954a83f5a986d490155ef77c6a6b3e63f5
+// Checksum: cd7f12af30ab06665b51353ea32ccf9f6209cfec
 //
 // ignore_for_file: unused_import
 
@@ -44,7 +44,8 @@ import '../syntax.dart';
 import '../util/fixed_length_list_builder.dart';
 import '../utils.dart';
 import '../value.dart';
-import 'interface/expression.dart';
+import 'interface/css.dart';
+import 'interface/statement.dart';
 import 'interface/statement.dart';
 
 /// A function that takes a callback with no arguments.
@@ -107,7 +108,10 @@ Value evaluateExpression(Expression expression,
 
 /// A visitor that executes Sass code to produce a CSS tree.
 class _EvaluateVisitor
-    implements StatementVisitor<Value>, ExpressionVisitor<Value> {
+    implements
+        StatementVisitor<Value>,
+        ExpressionVisitor<Value>,
+        CssVisitor<Value> {
   /// The import cache used to import other stylesheets.
   final ImportCache _importCache;
 
@@ -839,6 +843,9 @@ class _EvaluateVisitor
   }
 
   Value visitAtRule(AtRule node) {
+    // NOTE: this logic is largely duplicated in [visitCssAtRule]. Most changes
+    // here should be mirrored there.
+
     if (_declarationName != null) {
       throw _exception(
           "At-rules may not be used within nested declarations.", node.span);
@@ -959,13 +966,13 @@ class _EvaluateVisitor
     var stylesheet = result.item2;
 
     var url = stylesheet.span.sourceUrl;
-    if (_activeImports.contains(url)) {
+    if (!_activeImports.add(url)) {
       throw _exception("This file is already being loaded.", import.span);
     }
 
-    _activeImports.add(url);
+    var environment = _environment.global();
     _withStackFrame("@import", import, () {
-      _withEnvironment(_environment.global(), () {
+      _withEnvironment(environment, () {
         var oldImporter = _importer;
         var oldStylesheet = _stylesheet;
         _importer = importer;
@@ -977,6 +984,15 @@ class _EvaluateVisitor
         _stylesheet = oldStylesheet;
       });
     });
+
+    // TODO(nweiz): Make this check if any of the modules it uses actually
+    // contain CSS.
+    if (environment.usesModules) {
+      _combineCss(environment.toModule(
+              const CssStylesheet.empty(), const Extender.empty()))
+          .accept(this);
+    }
+
     _activeImports.remove(url);
   }
 
@@ -1034,6 +1050,9 @@ class _EvaluateVisitor
 
   /// Adds a CSS import for [import].
   void _visitStaticImport(StaticImport import) {
+    // NOTE: this logic is largely duplicated in [visitCssImport]. Most changes
+    // here should be mirrored there.
+
     var url = _interpolationToValue(import.url);
     var supports = import.supports;
     var resolvedSupports = supports is SupportsDeclaration
@@ -1097,6 +1116,9 @@ class _EvaluateVisitor
   }
 
   Value visitLoudComment(LoudComment node) {
+    // NOTE: this logic is largely duplicated in [visitCssComment]. Most changes
+    // here should be mirrored there.
+
     if (_inFunction) return null;
 
     // Comments are allowed to appear between CSS imports.
@@ -1899,6 +1921,80 @@ class _EvaluateVisitor
               : _serialize(result, expression, quote: false);
         }).join(),
         quotes: node.hasQuotes);
+  }
+
+  // ## Plain CSS
+
+  // These methods are used when evaluating CSS syntax trees from `@import`ed
+  // stylesheets that themselves contain `@use` rules, and CSS included via the
+  // `load-css()` function.
+
+  Value visitCssAtRule(CssAtRule node) {
+    // NOTE: this logic is largely duplicated in [visitAtRule]. Most changes
+    // here should be mirrored there.
+
+    if (_declarationName != null) {
+      throw _exception(
+          "At-rules may not be used within nested declarations.", node.span);
+    }
+
+    if (node.children == null) {
+      _parent.addChild(node as ModifiableCssAtRule);
+      return null;
+    }
+
+    // We don't need to worry about keyframes becaues they're represented as
+    // `CssKeyframesBlock`.
+    var wasInUnknownAtRule = _inUnknownAtRule;
+    _inUnknownAtRule = true;
+    _withParent(ModifiableCssAtRule(node.name, node.span, value: node.value),
+        () {
+      // We don't have to check for an unknown at-rule in a style rule here,
+      // because the previous compilation has already bubbled the at-rule to the
+      // root.
+      for (var child in node.children) {
+        child.accept(this);
+      }
+    },
+        through: (node) => node is CssStyleRule,
+        scopeWhen: node.hasDeclarations);
+    _inUnknownAtRule = wasInUnknownAtRule;
+    return null;
+  }
+
+  Value visitCssComment(CssComment node) {
+    // NOTE: this logic is largely duplicated in [visitLoudComment]. Most
+    // changes here should be mirrored there.
+
+    // Comments are allowed to appear between CSS imports.
+    if (_parent == _root && _endOfImports == _root.children.length) {
+      _endOfImports++;
+    }
+
+    _parent.addChild(node as ModifiableCssComment);
+    return null;
+  }
+
+  Value visitCssDeclaration(CssDeclaration node) {
+    _parent.addChild(node as ModifiableCssDeclaration);
+    return null;
+  }
+
+  Value visitCssImport(CssImport node) {
+    // NOTE: this logic is largely duplicated in [_visitStaticImport]. Most
+    // changes here should be mirrored there.
+
+    var modifiableNode = node as ModifiableCssImport;
+    if (_parent != _root) {
+      _parent.addChild(node);
+    } else if (_endOfImports == _root.children.length) {
+      _root.addChild(node);
+      _endOfImports++;
+    } else {
+      _outOfOrderImports ??= [];
+      _outOfOrderImports.add(node);
+    }
+    return null;
   }
 
   // ## Utilities
