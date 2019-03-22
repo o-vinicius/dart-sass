@@ -14,6 +14,7 @@ import '../ast/selector.dart';
 import '../ast/sass.dart';
 import '../exception.dart';
 import '../utils.dart';
+import 'empty_extender.dart';
 import 'extension.dart';
 import 'merged_extension.dart';
 import 'functions.dart';
@@ -21,6 +22,9 @@ import 'mode.dart';
 
 /// Tracks style rules and extensions, and applies the latter to the former.
 class Extender {
+  /// An [Extender] that contains no extensions and can have no extensions added.
+  static const empty = EmptyExtender();
+
   /// A map from all simple selectors in the stylesheet to the rules that
   /// contain them.
   ///
